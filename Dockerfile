@@ -1,5 +1,10 @@
 FROM python:3.12-slim AS base
 
+LABEL org.opencontainers.image.source=https://github.com/claudio-azevedo/Open-vCenter-Backend
+LABEL org.opencontainers.image.description="Open vCenter API"
+LABEL org.opencontainers.image.licenses=APACHE-2.0
+
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
@@ -17,6 +22,8 @@ RUN pip install --upgrade pip && pip install "hatchling" && pip install -e .
 COPY . .
 
 EXPOSE 8000
+
+
 
 # default: API. Migrations run in the app's startup preflight (app/preflight.py),
 # not here. compose overrides `command` for the worker.
