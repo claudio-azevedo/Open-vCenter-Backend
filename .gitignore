@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+*.sqlite3
+
+# local agent-binary storage (OVC_AGENT_STORAGE=local)
+uploads/
+
+# fake_agent.py local persistence
+scripts/.fake_agent_state.json
+scripts/.fake_agent_state.json.tmp
+
+# Local-only notes, never published
+PRE-PUBLISH.md

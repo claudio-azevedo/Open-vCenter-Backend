@@ -1,0 +1,69 @@
+name: ovc-backend
+
+# Infra (Postgres, Valkey, RabbitMQ, Keycloak) lives in ../infra-containers.
+# Start it first:  cd ../infra-containers && ./start-containers.sh
+# These services reach it via host.docker.internal (ports are published on the host).
+
+x-app-env: &app-env
+  OVC_DATABASE_URL: postgresql+asyncpg://ovc:ovc123@host.docker.internal:5432/ovc
+  OVC_VALKEY_URL: redis://host.docker.internal:6379/0
+  OVC_RABBITMQ_URL: amqp://ovc:ovc123@host.docker.internal:5672/
+  OVC_RABBITMQ_MGMT_URL: http://host.docker.internal:15672
+  OVC_ENV: dev
+  OVC_CORS_ORIGINS: '["http://localhost:3000"]'
+  # Auth: "stub" trusts every request. To verify OIDC JWTs instead, set
+  # OVC_AUTH_MODE=oidc and the vars below (defaults target the "ovc" realm from
+  # ../infra-containers/keycloak/ovc-realm.json). Roles are read at
+  # OVC_OIDC_ROLES_CLAIM; ADMINISTRATOR bypasses every scope filter.
+  OVC_AUTH_MODE: stub
+  # ISSUER must equal the token's `iss` (the URL the frontend/browser used),
+  # while JWKS_URL is how *this* container reaches the provider - they differ here.
+  OVC_OIDC_ISSUER: http://localhost:8080/realms/ovc
+  OVC_OIDC_JWKS_URL: http://host.docker.internal:8080/realms/ovc/protocol/openid-connect/certs
+  OVC_OIDC_AUDIENCE: ovc-frontend
+  OVC_OIDC_CLIENT_ID: ovc-frontend
+  # default roles claim is resource_access.<client_id>.roles; to override in
+  # compose, escape the literal as  $${client_id}  (compose eats a single $)
+  # OVC_OIDC_ROLES_CLAIM: realm_access.roles
+
+x-app-base: &app-base
+  build: .
+  environment: *app-env
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway" # for non-Docker-Desktop hosts
+
+services:
+  api:
+    <<: *app-base
+    ports: ["8000:8000"]
+    # the startup preflight runs migrations; hosts are created via POST /api/hosts
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # uploaded ovc-agent binaries (OVC_AGENT_STORAGE=local); kept out of the image
+    # so they survive a rebuild. Use OVC_AGENT_STORAGE=s3 in real deployments.
+    volumes:
+      - agent-binaries:/app/uploads
+
+  worker:
+    <<: *app-base
+    depends_on:
+      api: { condition: service_started }
+    command: ["python", "-m", "app.worker"]
+
+  # Optional stand-in for ovc-agent:  docker compose --profile demo up -d
+  fake-agent:
+    <<: *app-base
+    profiles: ["demo"]
+    depends_on:
+      api: { condition: service_started }
+    environment:
+      <<: *app-env
+      # generated inventory is persisted here and reused on restart
+      OVC_FAKE_AGENT_STATE_FILE: /data/fake_agent_state.json
+    volumes:
+      - fake-agent-state:/data
+    command: ["python", "scripts/fake_agent.py"]
+
+volumes:
+  fake-agent-state:
+  agent-binaries:
