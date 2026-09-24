@@ -117,6 +117,8 @@ async def upload_agent_binary(
     version = version.strip()
     if not version:
         raise ApiError("INVALID", "version is required")
+    if not (file.filename or "").lower().endswith(".exe"):
+        raise ApiError("INVALID", "agent binary must be an .exe file")
 
     dup = (
         await db.execute(
@@ -138,6 +140,10 @@ async def upload_agent_binary(
     tmp = tempfile.NamedTemporaryFile(delete=False)
     try:
         while chunk := await file.read(_CHUNK):
+            if size == 0 and not chunk.startswith(b"MZ"):
+                raise ApiError(
+                    "INVALID", "uploaded file is not a Windows executable"
+                )
             size += len(chunk)
             if size > _MAX_UPLOAD_BYTES:
                 raise ApiError(
