@@ -837,6 +837,18 @@ async def apply_response(db: AsyncSession, host_id: str, resp: AgentResponse) ->
                 host.agent_version = str(version)
                 await db.flush()
 
+    # cluster node pause/resume: reflect the node state the agent reported now
+    # rather than at the next hardware inventory. Best-effort.
+    if task.target_type == "host":
+        # local import: host_actions -> serializers -> inventory is a cycle
+        from .host_actions import apply_host_action_response
+
+        try:
+            async with db.begin_nested():
+                await apply_host_action_response(db, task, resp)
+        except Exception:
+            log.exception("apply_response: could not apply host state for task %s", task.id)
+
     # vm_export_template: register the new template row now (the agent attaches
     # the fresh template object to `resp.template`) rather than waiting for the
     # next template_inventory. Best-effort, in its own SAVEPOINT.

@@ -25,6 +25,7 @@ from ...schemas import (
 from ...schemas.agent_binary import AgentUpgradeRequest
 from ...services.agent_store import verify_scope
 from ...services.agent_upgrade import request_agent_upgrade, resolve_upgrade_binary
+from ...services.host_actions import DISRUPTIVE_HOST_ACTIONS, request_host_action
 from ...services.hosts import (
     agent_amqp_url,
     build_agent_install_script,
@@ -228,6 +229,29 @@ async def update_host_agent(
         raise forbidden("Only an administrator can upgrade the agent")
     binary = await resolve_upgrade_binary(db, host, body.binary_id if body else None)
     task = await request_agent_upgrade(db, host, binary=binary, requested_by=user.email)
+    return TaskEnvelope(task=task_out(task))
+
+
+@router.post(
+    "/hosts/{host_id}/actions/{action}",
+    response_model=TaskEnvelope,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def host_action(
+    host_id: str,
+    action: str,
+    db: DbSession,
+    scope: Scope,
+    user: CurrentUser,
+) -> TaskEnvelope:
+    """Queue a host operation on its agent: Failover Cluster node maintenance
+    (`suspend`, `suspend_drain`, `resume`, `resume_fallback`), a host `restart`,
+    or a forced `refresh_hardware` / `refresh_inventory`. Node maintenance and
+    restart are admin-only."""
+    host = await _get_visible_host(db, scope, host_id)
+    if action in DISRUPTIVE_HOST_ACTIONS and not scope.all:
+        raise forbidden("Only an administrator can change a host's cluster or power state")
+    task = await request_host_action(db, host, action, requested_by=user.email)
     return TaskEnvelope(task=task_out(task))
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import func, select
@@ -19,6 +20,7 @@ from ..ids import new_id
 from ..messaging import AgentRequest, publish_request
 from ..models import Host, Task, Template, Vm, VmNic
 from ..schemas import VmClone, VmCreate
+from .host_actions import host_is_clustered
 from .serializers import agent_connected
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,53 @@ def _require_host_online(host: Host) -> None:
             "until it reconnects",
             status_code=409,
         )
+
+
+_CSV_RE = re.compile(r"^[a-z]:\\clusterstorage\\[^\\]+", re.IGNORECASE)
+
+
+def _norm_path(path: str | None) -> str:
+    return (path or "").strip().replace("/", "\\").rstrip("\\")
+
+
+def _is_csv_path(path: str) -> bool:
+    return bool(_CSV_RE.match(path))
+
+
+def _is_system_drive(path: str) -> bool:
+    """A local path on C: - the host's system volume (a CSV under
+    C:\\ClusterStorage is not the system volume)."""
+    return path[:2].lower() == "c:" and not _is_csv_path(path)
+
+
+def _require_vm_storage_allowed(host: Host, destination: str | None) -> None:
+    """Reject a VM placement the platform does not allow:
+
+    - clustered host: only Cluster Shared Volumes;
+    - standalone host: never the system drive (C:), unless the Hyper-V default
+      VM path is on it - the agent then places the VM under that default path
+      (``resolveVMFolder``), never at the drive root.
+
+    An empty ``destination`` means the host's default VM path."""
+    clustered = host_is_clustered(host)
+    hyperv = (host.hardware or {}).get("hyperv") or {}
+    default_path = _norm_path(hyperv.get("defaultVmPath"))
+    dest = _norm_path(destination) or default_path
+    if clustered:
+        if not _is_csv_path(dest):
+            raise ApiError(
+                "STORAGE_NOT_ALLOWED",
+                f"Host '{host.name}' is in a cluster - VMs must be placed on a "
+                f"Cluster Shared Volume, not '{dest or 'the default VM path'}'",
+            )
+        return
+    if dest and _is_system_drive(dest) and not _is_system_drive(default_path):
+        raise ApiError(
+            "STORAGE_NOT_ALLOWED",
+            f"VMs cannot be placed on the system drive ('{dest}') - it is not "
+            "the host's Hyper-V default VM path",
+        )
+
 
 # action -> (agent function, optimistic transitional state or None when the
 # action does not change VM power state)
@@ -161,6 +210,24 @@ async def request_vm_action(
     params: dict[str, Any] | None = None,
 ) -> Task:
     function, transitional = ACTION_MAP[action]
+    if action == "migrate" and not vm.highly_available:
+        # only cluster roles can move between nodes (Quick/Live via the
+        # cluster); a non-HA VM would need a standalone live migration
+        raise ApiError(
+            "HA_REQUIRED",
+            f"'{vm.name}' does not have High Availability enabled - enable HA "
+            "before migrating it to another cluster node",
+            status_code=409,
+        )
+    if action == "move_storage":
+        dest = _norm_path((params or {}).get("destination_storage"))
+        if not dest:
+            raise ApiError(
+                "VALIDATION_ERROR", "destination_storage is required"
+            )
+        host = await db.get(Host, vm.host_id)
+        assert host is not None
+        _require_vm_storage_allowed(host, dest)
     return await _queue_vm_task(
         db,
         vm,
@@ -188,6 +255,7 @@ async def request_vm_create(
     # subfolders). Empty → the host's default Hyper-V VM path.
     _require_host_online(host)
     destination_storage = (body.destination_storage or "").strip()
+    _require_vm_storage_allowed(host, destination_storage)
     memory_bytes = body.memory_mb * 1024 * 1024
 
     vm = Vm(
@@ -317,6 +385,7 @@ async def request_vm_clone(
     ``vm_clone`` alongside ``vm_create``).
     """
     _require_host_online(host)
+    _require_vm_storage_allowed(host, body.destination_storage)
 
     firmware = "UEFI"
     cpu_count = body.cpu_count

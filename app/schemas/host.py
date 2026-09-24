@@ -44,17 +44,48 @@ class NetworkAdapter(CamelModel):
     mac: str
     speed_bps: int = 0
     connected: bool = False
+    # InterfaceDescription - the adapter model
     description: str = ""
+    status: str | None = None
+    link_speed: str | None = None
+    driver_version: str | None = None
+    driver_date: str | None = None
+    driver_provider: str | None = None
+    firmware_version: str | None = None
 
 
 class VirtualSwitch(CamelModel):
     """A Hyper-V virtual switch (or the equivalent bridge on other hypervisors)."""
 
     name: str
+    id: str | None = None
     # "External" | "Internal" | "Private"
     type: str = ""
     # the physical uplink adapter, for External switches
     net_adapter: str | None = None
+    allow_management_os: bool | None = Field(default=None, alias="allowManagementOS")
+    # Switch Embedded Teaming (SET)
+    embedded_teaming: bool | None = None
+    team_members: list[str] = Field(default_factory=list)
+    load_balancing_algorithm: str | None = None
+    bandwidth_reservation_mode: str | None = None
+
+
+class FibreChannelHba(CamelModel):
+    """A Fibre Channel host bus adapter (best-effort - none on hosts without FC)."""
+
+    manufacturer: str = ""
+    model: str = ""
+    model_description: str = ""
+    serial_number: str = ""
+    driver_version: str = ""
+    firmware_version: str = ""
+    hardware_version: str = ""
+    node_wwn: str = Field(default="", alias="nodeWWN")
+    port_wwn: str = Field(default="", alias="portWWN")
+    state: str = ""
+    speed: str = ""
+    connection_type: str = ""
 
 
 class SystemInfo(CamelModel):
@@ -93,6 +124,8 @@ class HostHardwareInventory(CamelModel):
     network: list[NetworkAdapter] = Field(default_factory=list)
     # virtual switches / bridges defined on the host
     v_switches: list[VirtualSwitch] = Field(default_factory=list)
+    # Fibre Channel HBAs (Hyper-V agent, best-effort)
+    hbas: list[FibreChannelHba] = Field(default_factory=list)
     system: SystemInfo | None = None
     boot_time: datetime | None = None
     load: LoadSnapshot | None = None
