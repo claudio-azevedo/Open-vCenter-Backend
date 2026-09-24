@@ -2,30 +2,30 @@
 name = "ovc-backend"
 version = "0.1.0"
 description = "Open vCenter backend - REST API + RabbitMQ worker"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.32",
-    "pydantic>=2.9",
-    "pydantic-settings>=2.6",
-    "sqlalchemy[asyncio]>=2.0.36",
-    "asyncpg>=0.30",
-    "alembic>=1.14",
-    "aio-pika>=9.5",
-    "redis>=5.2",
-    "python-json-logger>=3.2",
-    "httpx>=0.28",
-    "python-jose[cryptography]>=3.3",
-    "python-multipart>=0.0.18",
-    "aioboto3>=13.0",
+    "fastapi>=0.141",
+    "uvicorn[standard]>=0.52",
+    "pydantic>=2.13",
+    "pydantic-settings>=2.15",
+    "sqlalchemy[asyncio]>=2.0.52",
+    "asyncpg>=0.31",
+    "alembic>=1.19",
+    "aio-pika>=10.0",
+    "redis>=8.1",
+    "python-json-logger>=4.2",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.10",
+    "python-multipart>=0.0.32",
+    "aioboto3>=15.5",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.8",
-    "pytest>=8.3",
-    "pytest-asyncio>=0.24",
-    "anyio>=4.6",
+    "ruff>=0.16",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "anyio>=4.14",
 ]
 
 [project.scripts]
@@ -41,7 +41,7 @@ packages = ["app"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]

@@ -28,15 +28,20 @@ def _bearer_token(request: Request) -> str | None:
 
 
 _jwks_cache: dict[str, object] = {"at": 0.0, "doc": None}
+# floor between forced refreshes, so tokens with bogus `kid`s can't hammer the provider
+_JWKS_MIN_REFRESH_SECONDS = 60
 
 
-async def _get_jwks() -> dict:
-    """Fetch the OIDC provider's JWKS, cached for oidc_jwks_ttl_seconds."""
+async def _get_jwks(force: bool = False) -> dict:
+    """Fetch the OIDC provider's JWKS, cached for oidc_jwks_ttl_seconds.
+
+    `force` re-downloads before the TTL expires, at most once per
+    _JWKS_MIN_REFRESH_SECONDS.
+    """
     now = time.monotonic()
-    if (
-        _jwks_cache["doc"] is not None
-        and now - float(_jwks_cache["at"]) < _settings.oidc_jwks_ttl_seconds
-    ):
+    age = now - float(_jwks_cache["at"])
+    ttl = _JWKS_MIN_REFRESH_SECONDS if force else _settings.oidc_jwks_ttl_seconds
+    if _jwks_cache["doc"] is not None and age < ttl:
         return _jwks_cache["doc"]  # type: ignore[return-value]
 
     import httpx
@@ -48,20 +53,40 @@ async def _get_jwks() -> dict:
     return doc
 
 
+def _find_key(jwks: dict, kid: str | None):
+    """Signing key from the JWKS matching the token's `kid` (or the only key)."""
+    from jwt import PyJWKSet
+
+    keys = PyJWKSet.from_dict(jwks).keys
+    if kid is None:
+        return keys[0] if len(keys) == 1 else None
+    return next((k for k in keys if k.key_id == kid), None)
+
+
 async def _verify_oidc(token: str) -> dict:
-    from jose import jwt
+    import jwt
 
     if not _settings.oidc_jwks_url:
         raise unauthorized("OIDC JWKS URL not configured")
 
-    jwks = await _get_jwks()
-    return jwt.decode(
-        token,
-        jwks,
-        audience=_settings.oidc_audience,
-        issuer=_settings.oidc_issuer or None,
-        options={"verify_aud": bool(_settings.oidc_audience)},
-    )
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+        key = _find_key(await _get_jwks(), kid)
+        if key is None:
+            # unknown kid - the provider may have rotated keys since the last fetch
+            key = _find_key(await _get_jwks(force=True), kid)
+        if key is None:
+            raise unauthorized("Token signing key not found")
+        return jwt.decode(
+            token,
+            key,
+            algorithms=[key.algorithm_name],
+            audience=_settings.oidc_audience or None,
+            issuer=_settings.oidc_issuer or None,
+            options={"verify_aud": bool(_settings.oidc_audience)},
+        )
+    except jwt.PyJWTError as exc:
+        raise unauthorized(f"Invalid token: {exc}") from exc
 
 
 def _claim_by_path(claims: dict, path: str) -> object:
