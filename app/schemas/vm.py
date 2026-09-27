@@ -217,6 +217,8 @@ class VmOut(CamelModel):
     dvd_path: str | None = None
     highly_available: bool = False
     notes: str | None = None
+    # ids of the application-managed tags on the VM (GET /tags resolves them)
+    tag_ids: list[str] = []
     metrics_enabled: bool = False
     created_at: datetime | None = None
     # non-null while an operation is running on the VM (see VmLock)

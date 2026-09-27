@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
@@ -19,6 +20,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..ids import new_id
 from .base import UUID_STR, Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from .tag import Tag
 
 # Values mirror the frontend VmState union (docs/api-contract.md).
 VM_STATES = (
@@ -159,6 +163,14 @@ class Vm(Base, TimestampMixin):
         cascade="all, delete-orphan",
         lazy="selectin",
         order_by="VmSnapshot.position",
+    )
+    # application-managed labels (services.tags); the agent never touches them.
+    # passive_deletes: the vm_tags FKs cascade in the DB.
+    tags: Mapped[list[Tag]] = relationship(
+        "Tag",
+        secondary="vm_tags",
+        lazy="selectin",
+        passive_deletes=True,
     )
 
     __table_args__ = (

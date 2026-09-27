@@ -278,6 +278,7 @@ async def request_vm_create(
         disks=[],
         nics=[],
         snapshots=[],
+        tags=[],
     )
     db.add(vm)
     if body.vlan_id is not None:
@@ -477,6 +478,7 @@ async def request_vm_clone(
         disks=[],
         nics=[],
         snapshots=[],
+        tags=[],
     )
     db.add(vm)
     if vlan_id is not None:

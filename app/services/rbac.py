@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -88,3 +88,12 @@ def vm_visible(scope: VisibleScope, vm: Vm) -> bool:
         or scope.sees_host(vm.host_id)
         or scope.sees_folder(vm.folder_id)
     )
+
+
+def vm_visible_clause(scope: VisibleScope) -> ColumnElement[bool]:
+    """SQL twin of :func:`vm_visible`, for filtering or counting in a query."""
+    if scope.all:
+        return true()
+    if not scope.host_ids and not scope.folder_ids:
+        return false()
+    return or_(Vm.host_id.in_(scope.host_ids), Vm.folder_id.in_(scope.folder_ids))

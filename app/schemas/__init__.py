@@ -24,6 +24,15 @@ from .host import (
 )
 from .image import IsoOut, TemplateOut
 from .metric import HostMetricSample, VmMetricSample
+from .tag import (
+    TagCategoryCreate,
+    TagCategoryOut,
+    TagCategoryUpdate,
+    TagCreate,
+    TagOut,
+    TagUpdate,
+    VmTagsUpdate,
+)
 from .task import TaskDetailOut, TaskEnvelope, TaskOut
 from .vlan import VlanCreate, VlanOut, VlanUpdate
 from .vm import (
@@ -73,6 +82,13 @@ __all__ = [
     "IsoOut",
     "HostMetricSample",
     "VmMetricSample",
+    "TagCategoryCreate",
+    "TagCategoryOut",
+    "TagCategoryUpdate",
+    "TagCreate",
+    "TagOut",
+    "TagUpdate",
+    "VmTagsUpdate",
     "TaskOut",
     "TaskDetailOut",
     "TaskEnvelope",

@@ -11,6 +11,8 @@ from ..models import (
     Host,
     HostMetric,
     Iso,
+    Tag,
+    TagCategory,
     Task,
     Template,
     Vlan,
@@ -28,6 +30,8 @@ from ..schemas import (
     HostMetricSample,
     HostOut,
     IsoOut,
+    TagCategoryOut,
+    TagOut,
     TaskDetailOut,
     TaskOut,
     TemplateOut,
@@ -206,6 +210,7 @@ def vm_out(
         dvd_path=vm.dvd_path,
         highly_available=vm.highly_available,
         notes=vm.notes,
+        tag_ids=sorted(t.id for t in vm.tags),
         metrics_enabled=vm.metrics_enabled,
         created_at=vm.vm_created_at,
         lock=VmLock.model_validate(lock) if lock else None,
@@ -226,6 +231,20 @@ def folder_out(folder: Folder) -> FolderOut:
         name=folder.name,
         cluster_id=folder.cluster_id,
         host_id=folder.host_id,
+    )
+
+
+def tag_category_out(category: TagCategory) -> TagCategoryOut:
+    return TagCategoryOut(id=category.id, name=category.name)
+
+
+def tag_out(tag: Tag, vm_count: int = 0) -> TagOut:
+    return TagOut(
+        id=tag.id,
+        name=tag.name,
+        category_id=tag.category_id,
+        color=tag.color,
+        vm_count=vm_count,
     )
 
 

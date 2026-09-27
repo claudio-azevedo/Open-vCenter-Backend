@@ -27,10 +27,12 @@ from ...schemas import (
     VmMetricSample,
     VmMove,
     VmOut,
+    VmTagsUpdate,
 )
 from ...services.organization import move_vm_to_folder
 from ...services.rbac import vm_visible
 from ...services.serializers import agent_connected, task_out, vm_metric_out, vm_out
+from ...services.tags import set_vm_tags
 from ...services.vms import (
     ACTION_MAP,
     remove_vm_from_inventory,
@@ -236,6 +238,23 @@ async def move_vm(
     This is a purely logical operation - no agent request."""
     vm = await _get_visible_vm(db, scope, vm_id)
     vm = await move_vm_to_folder(db, vm, body.folder_id)
+    return vm_out(
+        vm,
+        await get_vm_state(vm.id),
+        await get_vm_lock(vm.id),
+        host_offline=await _host_offline(db, vm.host_id),
+    )
+
+
+@router.put("/vms/{vm_id}/tags", response_model=VmOut)
+async def put_vm_tags(
+    vm_id: str, body: VmTagsUpdate, db: DbSession, scope: Scope
+) -> VmOut:
+    """Replace the VM's tags (at most one per category). Any user who can see the
+    VM may tag it; a DB-only change, allowed even while the VM is locked or its
+    host is offline."""
+    vm = await _get_visible_vm(db, scope, vm_id)
+    vm = await set_vm_tags(db, vm, body.tag_ids)
     return vm_out(
         vm,
         await get_vm_state(vm.id),

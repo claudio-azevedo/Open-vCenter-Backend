@@ -10,6 +10,7 @@ from . import (
     health,
     hosts,
     images,
+    tags,
     tasks,
     vlans,
     vms,
@@ -24,6 +25,7 @@ api_router.include_router(agent_binaries.router)
 api_router.include_router(folders.router)
 api_router.include_router(vlans.router)
 api_router.include_router(vms.router)
+api_router.include_router(tags.router)
 api_router.include_router(tasks.router)
 api_router.include_router(images.router)
 

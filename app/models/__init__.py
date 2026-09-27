@@ -8,6 +8,15 @@ from .host import DEFAULT_HYPERVISOR, Host, Hypervisor
 from .image import Iso, Template
 from .metric import HostMetric, VmMetric
 from .rbac import ScopeGrant, User
+from .tag import (
+    DEFAULT_TAG_COLOR,
+    TAG_COLORS,
+    TAG_NAME_MAX_LENGTH,
+    TAG_NAME_PATTERN,
+    Tag,
+    TagCategory,
+    vm_tags,
+)
 from .task import TERMINAL_TASK_STATUSES, Task
 from .vlan import Vlan
 from .vm import VM_STATES, Vm, VmDisk, VmNic, VmSnapshot
@@ -26,6 +35,13 @@ __all__ = [
     "VmMetric",
     "ScopeGrant",
     "User",
+    "Tag",
+    "TagCategory",
+    "TAG_COLORS",
+    "DEFAULT_TAG_COLOR",
+    "TAG_NAME_MAX_LENGTH",
+    "TAG_NAME_PATTERN",
+    "vm_tags",
     "Task",
     "TERMINAL_TASK_STATUSES",
     "Vlan",
