@@ -5,13 +5,14 @@ from sqlalchemy import select
 
 from ...models import Folder
 from ...schemas import FolderCreate, FolderOut, FolderUpdate
+from ...services.audit import changes, record
 from ...services.organization import (
     create_folder,
     delete_folder,
     rename_folder,
 )
 from ...services.serializers import folder_out
-from ..deps import DbSession, Scope
+from ..deps import CurrentUser, DbSession, Scope
 from ..errors import forbidden, not_found
 
 router = APIRouter(tags=["folders"])
@@ -42,7 +43,9 @@ async def list_folders(
 
 
 @router.post("/folders", response_model=FolderOut, status_code=status.HTTP_201_CREATED)
-async def add_folder(body: FolderCreate, db: DbSession, scope: Scope) -> FolderOut:
+async def add_folder(
+    body: FolderCreate, db: DbSession, scope: Scope, user: CurrentUser
+) -> FolderOut:
     allowed = scope.all
     if body.cluster_id:
         allowed = allowed or scope.sees_cluster(body.cluster_id)
@@ -53,6 +56,7 @@ async def add_folder(body: FolderCreate, db: DbSession, scope: Scope) -> FolderO
     folder = await create_folder(
         db, name=body.name, cluster_id=body.cluster_id, host_id=body.host_id
     )
+    await record(db, user, "folder.create", folder)
     return folder_out(folder)
 
 
@@ -67,15 +71,21 @@ async def _get_visible_folder(db: DbSession, scope: Scope, folder_id: str) -> Fo
 
 @router.patch("/folders/{folder_id}", response_model=FolderOut)
 async def patch_folder(
-    folder_id: str, body: FolderUpdate, db: DbSession, scope: Scope
+    folder_id: str, body: FolderUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> FolderOut:
     folder = await _get_visible_folder(db, scope, folder_id)
+    before = folder.name
     folder = await rename_folder(db, folder, body.name)
+    if diff := changes({"name": before}, {"name": folder.name}):
+        await record(db, user, "folder.rename", folder, details=diff)
     return folder_out(folder)
 
 
 @router.delete("/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_folder(folder_id: str, db: DbSession, scope: Scope) -> Response:
+async def remove_folder(
+    folder_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> Response:
     folder = await _get_visible_folder(db, scope, folder_id)
-    await delete_folder(db, folder)
+    event = await record(db, user, "folder.delete", folder)
+    event.details = {"vmsDetached": await delete_folder(db, folder)}
     return Response(status_code=status.HTTP_204_NO_CONTENT)

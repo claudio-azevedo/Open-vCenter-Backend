@@ -119,8 +119,8 @@ ACTION_MAP: dict[str, tuple[str, str | None]] = {
 }
 
 # Actions that only read VM state - queued without the VM lock so they neither
-# block nor are blocked by a mutating task in flight.
-_READ_ONLY_ACTIONS = frozenset({"refresh"})
+# block nor are blocked by a mutating task in flight, and not audited.
+READ_ONLY_VM_ACTIONS = frozenset({"refresh"})
 
 
 async def count_host_vms(db: AsyncSession, host_id: str) -> int:
@@ -235,7 +235,7 @@ async def request_vm_action(
         params=params or {},
         requested_by=requested_by,
         transitional=transitional,
-        lock=action not in _READ_ONLY_ACTIONS,
+        lock=action not in READ_ONLY_VM_ACTIONS,
     )
 
 

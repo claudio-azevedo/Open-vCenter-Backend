@@ -28,6 +28,7 @@ from ...services.agent_store import (
     verify_download,
 )
 from ...services.agent_upgrade import request_agent_upgrade
+from ...services.audit import changes, record
 from ...services.serializers import agent_connected, task_out
 from ..deps import CurrentUser, DbSession, Scope
 from ..errors import ApiError, forbidden, not_found
@@ -183,6 +184,18 @@ async def upload_agent_binary(
         if make_active:
             await _set_active(db, binary)
         await db.flush()
+        await record(
+            db,
+            user,
+            "agent_binary.upload",
+            binary,
+            details={
+                "hypervisor": binary.hypervisor,
+                "sizeBytes": binary.size_bytes,
+                "sha256": binary.checksum_sha256,
+                "makeActive": make_active,
+            },
+        )
         return _out(binary)
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -191,12 +204,17 @@ async def upload_agent_binary(
 
 @router.patch("/agent-binaries/{binary_id}", response_model=AgentBinaryOut)
 async def update_agent_binary(
-    binary_id: str, body: AgentBinaryUpdate, db: DbSession, scope: Scope
+    binary_id: str,
+    body: AgentBinaryUpdate,
+    db: DbSession,
+    scope: Scope,
+    user: CurrentUser,
 ) -> AgentBinaryOut:
     _require_admin(scope)
     binary = await db.get(AgentBinary, binary_id)
     if binary is None:
         raise not_found("Agent binary")
+    before = {"notes": binary.notes, "isActive": binary.is_active}
     fields = body.model_fields_set
     if "notes" in fields:
         binary.notes = body.notes or None
@@ -206,11 +224,15 @@ async def update_agent_binary(
         else:
             binary.is_active = False
     await db.flush()
+    if diff := changes(before, {"notes": binary.notes, "isActive": binary.is_active}):
+        await record(db, user, "agent_binary.update", binary, details=diff)
     return _out(binary)
 
 
 @router.delete("/agent-binaries/{binary_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent_binary(binary_id: str, db: DbSession, scope: Scope) -> None:
+async def delete_agent_binary(
+    binary_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> None:
     _require_admin(scope)
     binary = await db.get(AgentBinary, binary_id)
     if binary is None:
@@ -221,6 +243,9 @@ async def delete_agent_binary(binary_id: str, db: DbSession, scope: Scope) -> No
             "Promote another build to active before deleting this one",
             status_code=409,
         )
+    await record(
+        db, user, "agent_binary.delete", binary, details={"hypervisor": binary.hypervisor}
+    )
     try:
         await get_agent_store().delete(binary.storage_key)
     except AgentStoreError:
@@ -293,6 +318,14 @@ async def rollout_agent_binary(
         try:
             task = await request_agent_upgrade(
                 db, host, binary=binary, requested_by=user.email
+            )
+            await record(
+                db,
+                user,
+                "host.update_agent",
+                host,
+                task=task,
+                details={"version": binary.version, "rollout": True},
             )
             tasks.append(task_out(task))
         except ApiError as exc:

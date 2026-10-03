@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, Response, status
 
 from ...models import Vlan
 from ...schemas import VlanCreate, VlanOut, VlanUpdate
+from ...services.audit import changes, record
 from ...services.networking import (
     create_vlan,
     delete_vlan,
@@ -11,7 +12,7 @@ from ...services.networking import (
     update_vlan,
 )
 from ...services.serializers import vlan_out
-from ..deps import DbSession, Scope
+from ..deps import CurrentUser, DbSession, Scope
 from ..errors import forbidden, not_found
 
 router = APIRouter(tags=["vlans"])
@@ -37,7 +38,9 @@ async def get_vlans(
 
 
 @router.post("/vlans", response_model=VlanOut, status_code=status.HTTP_201_CREATED)
-async def add_vlan(body: VlanCreate, db: DbSession, scope: Scope) -> VlanOut:
+async def add_vlan(
+    body: VlanCreate, db: DbSession, scope: Scope, user: CurrentUser
+) -> VlanOut:
     allowed = scope.all
     if body.cluster_id:
         allowed = allowed or scope.sees_cluster(body.cluster_id)
@@ -54,7 +57,17 @@ async def add_vlan(body: VlanCreate, db: DbSession, scope: Scope) -> VlanOut:
         cluster_id=body.cluster_id,
         host_id=body.host_id,
     )
+    await record(db, user, "vlan.create", vlan, details=_vlan_fields(vlan))
     return vlan_out(vlan)
+
+
+def _vlan_fields(vlan: Vlan) -> dict:
+    return {
+        "name": vlan.name,
+        "vlanId": vlan.vlan_id,
+        "description": vlan.description,
+        "isDefault": vlan.is_default,
+    }
 
 
 async def _get_visible_vlan(db: DbSession, scope: Scope, vlan_id: str) -> Vlan:
@@ -68,9 +81,10 @@ async def _get_visible_vlan(db: DbSession, scope: Scope, vlan_id: str) -> Vlan:
 
 @router.patch("/vlans/{vlan_id}", response_model=VlanOut)
 async def patch_vlan(
-    vlan_id: str, body: VlanUpdate, db: DbSession, scope: Scope
+    vlan_id: str, body: VlanUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> VlanOut:
     vlan = await _get_visible_vlan(db, scope, vlan_id)
+    before = _vlan_fields(vlan)
     vlan = await update_vlan(
         db,
         vlan,
@@ -78,11 +92,16 @@ async def patch_vlan(
         description=body.description,
         is_default=body.is_default,
     )
+    if diff := changes(before, _vlan_fields(vlan)):
+        await record(db, user, "vlan.update", vlan, details=diff)
     return vlan_out(vlan)
 
 
 @router.delete("/vlans/{vlan_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_vlan(vlan_id: str, db: DbSession, scope: Scope) -> Response:
+async def remove_vlan(
+    vlan_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> Response:
     vlan = await _get_visible_vlan(db, scope, vlan_id)
+    await record(db, user, "vlan.delete", vlan, details={"vlanId": vlan.vlan_id})
     await delete_vlan(db, vlan)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

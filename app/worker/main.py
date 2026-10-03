@@ -23,6 +23,7 @@ from ..messaging import (
 )
 from ..models import Host, HostMetric, Task, Vm, VmMetric
 from ..models.task import TERMINAL_TASK_STATUSES
+from ..services.audit import prune_events, settle_task_events
 from ..task_timeouts import task_timeout_seconds
 from .consumers import handle_message
 
@@ -32,6 +33,7 @@ _settings = get_settings()
 HOST_SCAN_INTERVAL = 15
 TIMEOUT_SWEEP_INTERVAL = 30
 METRICS_SWEEP_INTERVAL = 300
+AUDIT_SWEEP_INTERVAL = 3600
 
 # How long RabbitMQ may stay disconnected before giving up and exiting, so the
 # orchestrator restarts the process fresh. connect_robust retries the
@@ -154,15 +156,14 @@ async def _sweep_stale_tasks() -> None:
             < now - timedelta(seconds=task_timeout_seconds(t.kind))
         ]
         if stale:
+            stale_ids = [t.id for t in stale]
+            error = "Agent did not respond in time"
             await db.execute(
                 update(Task)
-                .where(Task.id.in_([t.id for t in stale]))
-                .values(
-                    status="timeout",
-                    finished_at=datetime.now(UTC),
-                    error="Agent did not respond in time",
-                )
+                .where(Task.id.in_(stale_ids))
+                .values(status="timeout", finished_at=datetime.now(UTC), error=error)
             )
+            await settle_task_events(db, stale_ids, "timeout", error)
             log.warning("timed out %d stale task(s)", len(stale))
             # free any VM these tasks were holding
             for t in stale:
@@ -206,6 +207,26 @@ async def _metrics_retention_sweeper() -> None:
                     log.info(
                         "pruned %d stale %s row(s)", result.rowcount, model.__tablename__
                     )
+
+
+async def _audit_retention_sweeper() -> None:
+    """Drop audit events older than OVC_AUDIT_RETENTION_DAYS (0 = keep forever)."""
+    if _settings.audit_retention_days <= 0:
+        log.info("audit retention disabled - keeping every audit event")
+        return
+    while True:
+        try:
+            async with session_scope() as db:
+                pruned = await prune_events(db, _settings.audit_retention_days)
+            if pruned:
+                log.info(
+                    "pruned %d audit event(s) older than %d day(s)",
+                    pruned,
+                    _settings.audit_retention_days,
+                )
+        except Exception:  # noqa: BLE001 - retry on the next pass
+            log.exception("audit retention sweep failed; will retry")
+        await asyncio.sleep(AUDIT_SWEEP_INTERVAL)
 
 
 async def run() -> None:
@@ -385,6 +406,7 @@ async def run() -> None:
 
     stale_checker_task = asyncio.create_task(_timeout_sweeper())
     metrics_sweeper_task = asyncio.create_task(_metrics_retention_sweeper())
+    audit_sweeper_task = asyncio.create_task(_audit_retention_sweeper())
     rabbitmq_health_task = asyncio.create_task(check_rabbitmq_health())
     consumer_health_task = asyncio.create_task(check_consumer_health())
     host_consumer_task = asyncio.create_task(check_host_consumers())
@@ -399,6 +421,7 @@ async def run() -> None:
     finally:
         stale_checker_task.cancel()
         metrics_sweeper_task.cancel()
+        audit_sweeper_task.cancel()
         rabbitmq_health_task.cancel()
         consumer_health_task.cancel()
         host_consumer_task.cancel()

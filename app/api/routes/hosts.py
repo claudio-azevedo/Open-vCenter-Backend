@@ -8,7 +8,8 @@ from sqlalchemy.orm import selectinload
 
 from ...cache import get_vm_locks, get_vm_states
 from ...config import get_settings
-from ...models import Host, HostMetric, Iso, Template, Vm
+from ...models import Cluster, Host, HostMetric, Iso, Task, Template, Vm
+from ...models.task import TERMINAL_TASK_STATUSES
 from ...schemas import (
     HostAgentConfigOut,
     HostAgentInstallOut,
@@ -25,7 +26,12 @@ from ...schemas import (
 from ...schemas.agent_binary import AgentUpgradeRequest
 from ...services.agent_store import verify_scope
 from ...services.agent_upgrade import request_agent_upgrade, resolve_upgrade_binary
-from ...services.host_actions import DISRUPTIVE_HOST_ACTIONS, request_host_action
+from ...services.audit import changes, record, settle_task_events
+from ...services.host_actions import (
+    DISRUPTIVE_HOST_ACTIONS,
+    READ_ONLY_HOST_ACTIONS,
+    request_host_action,
+)
 from ...services.hosts import (
     agent_amqp_url,
     build_agent_install_script,
@@ -78,7 +84,9 @@ async def list_hosts(
 
 
 @router.post("/hosts", response_model=HostDetailOut, status_code=status.HTTP_201_CREATED)
-async def add_host(body: HostCreate, db: DbSession, scope: Scope) -> HostDetailOut:
+async def add_host(
+    body: HostCreate, db: DbSession, scope: Scope, user: CurrentUser
+) -> HostDetailOut:
     if not scope.all and not (
         body.cluster_id and scope.sees_cluster(body.cluster_id)
     ):
@@ -89,7 +97,16 @@ async def add_host(body: HostCreate, db: DbSession, scope: Scope) -> HostDetailO
         cluster_id=body.cluster_id,
         hypervisor=body.hypervisor,
     )
+    await record(db, user, "host.create", host, details={"hypervisor": host.hypervisor})
     return host_detail_out(host, 0)
+
+
+async def _cluster_ref(db: DbSession, cluster_id: str | None) -> dict | None:
+    """`{id, name}` of a cluster for an audit diff; None = standalone."""
+    if cluster_id is None:
+        return None
+    cluster = await db.get(Cluster, cluster_id)
+    return {"id": cluster_id, "name": cluster.name if cluster else None}
 
 
 async def _get_visible_host(db: DbSession, scope: Scope, host_id: str) -> Host:
@@ -110,7 +127,7 @@ async def get_host(host_id: str, db: DbSession, scope: Scope) -> HostDetailOut:
 
 @router.patch("/hosts/{host_id}", response_model=HostDetailOut)
 async def update_host(
-    host_id: str, body: HostUpdate, db: DbSession, scope: Scope
+    host_id: str, body: HostUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> HostDetailOut:
     host = await _get_visible_host(db, scope, host_id)
     fields = body.model_fields_set
@@ -120,23 +137,43 @@ async def update_host(
             body.cluster_id and scope.sees_cluster(body.cluster_id)
         ):
             raise forbidden("You cannot move this host")
+        before = await _cluster_ref(db, host.cluster_id)
         host = await move_host(db, host, body.cluster_id)
+        after = await _cluster_ref(db, host.cluster_id)
+        if diff := changes({"cluster": before}, {"cluster": after}):
+            await record(db, user, "host.move", host, details=diff)
 
+    before = {"name": host.name, "fqdn": host.fqdn}
     if "name" in fields and body.name is not None:
         host.name = body.name.strip()
     if "fqdn" in fields and body.fqdn is not None:
         host.fqdn = body.fqdn.strip()
     await db.flush()
+    if diff := changes(before, {"name": host.name, "fqdn": host.fqdn}):
+        await record(db, user, "host.update", host, details=diff)
 
     count = (await _vm_counts(db)).get(host.id, 0)
     return host_detail_out(host, count)
 
 
 @router.delete("/hosts/{host_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_host(host_id: str, db: DbSession, scope: Scope) -> None:
+async def remove_host(
+    host_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> None:
     host = await _get_visible_host(db, scope, host_id)
     if not scope.all:
         raise forbidden("Only an administrator can remove hosts")
+    vm_count = (await _vm_counts(db)).get(host.id, 0)
+    await record(db, user, "host.delete", host, details={"vmCount": vm_count})
+    # the host's tasks go with it (FK cascade) - close their audit events now
+    open_tasks = (
+        await db.execute(
+            select(Task.id)
+            .where(Task.host_id == host.id)
+            .where(Task.status.notin_(TERMINAL_TASK_STATUSES))
+        )
+    ).scalars().all()
+    await settle_task_events(db, open_tasks, "failed", "Host removed before the task finished")
     await delete_host(db, host)
 
 
@@ -229,6 +266,9 @@ async def update_host_agent(
         raise forbidden("Only an administrator can upgrade the agent")
     binary = await resolve_upgrade_binary(db, host, body.binary_id if body else None)
     task = await request_agent_upgrade(db, host, binary=binary, requested_by=user.email)
+    await record(
+        db, user, "host.update_agent", host, task=task, details={"version": binary.version}
+    )
     return TaskEnvelope(task=task_out(task))
 
 
@@ -252,6 +292,8 @@ async def host_action(
     if action in DISRUPTIVE_HOST_ACTIONS and not scope.all:
         raise forbidden("Only an administrator can change a host's cluster or power state")
     task = await request_host_action(db, host, action, requested_by=user.email)
+    if action not in READ_ONLY_HOST_ACTIONS:
+        await record(db, user, f"host.{action}", host, task=task)
     return TaskEnvelope(task=task_out(task))
 
 

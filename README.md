@@ -130,6 +130,7 @@ Docker Compose sets them itself; `.env.example` is the template for local runs.
 | `OVC_ADMIN_ROLE`                                             | `ADMINISTRATOR`                                      | this role bypasses every scope filter (full access, no `ScopeGrant`)                                      |
 | `OVC_AGENT_OFFLINE_AFTER_SECONDS`                            | `120`                                                | host is "offline" if `agent_status` is older than this                                                    |
 | `OVC_TASK_TIMEOUT_SECONDS`                                   | `300`                                                | worker marks a task `timeout` after this                                                                  |
+| `OVC_AUDIT_RETENTION_DAYS`                                   | `365`                                                | days an audit event is kept before the worker prunes it; `0` = keep forever                               |
 | `OVC_AGENT_STORAGE`                                          | `local`                                              | `local` \| `s3` - where agent binaries live (config only for now)                                         |
 | `OVC_LOG_LEVEL` / `OVC_LOG_JSON`                             | `INFO` / `false`                                     | logging                                                                                                   |
 
@@ -149,6 +150,7 @@ Everything under `OVC_API_PREFIX` (default `/api`). See
 - `POST /vms/{id}/actions/{start|stop|shutdown|restart|pause}` → `202 { task }`
 - `DELETE /vms/{id}` → `202 { task }`
 - `GET /tasks?vmId&hostId&status&limit`, `/tasks/{id}`
+- `GET /audit-events?actor&action&targetType&targetId&hostId&clusterId&outcome&since&until&q&limit&cursor` - the audit log, newest first (admin only)
 - `GET /templates`, `/isos`
 
 Organization (synchronous, DB only - no agent):

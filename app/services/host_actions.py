@@ -33,7 +33,9 @@ CLUSTER_NODE_ACTIONS = frozenset(
 )
 # Actions that change the host / node state - admin-only, one at a time.
 DISRUPTIVE_HOST_ACTIONS = CLUSTER_NODE_ACTIONS | {"restart"}
-HOST_ACTIONS = DISRUPTIVE_HOST_ACTIONS | {"refresh_hardware", "refresh_inventory"}
+# Only re-read the host - nothing changes, so they are not audited.
+READ_ONLY_HOST_ACTIONS = frozenset({"refresh_hardware", "refresh_inventory"})
+HOST_ACTIONS = DISRUPTIVE_HOST_ACTIONS | READ_ONLY_HOST_ACTIONS
 
 
 def host_is_clustered(host: Host) -> bool:

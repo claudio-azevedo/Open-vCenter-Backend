@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     # --- task lifecycle ---
     task_timeout_seconds: int = 300
 
+    # --- audit log ---
+    # days an audit event is kept before the worker prunes it; 0 = keep forever
+    audit_retention_days: int = Field(default=365, ge=0)
+
     @property
     def is_dev(self) -> bool:
         return self.env == "dev"

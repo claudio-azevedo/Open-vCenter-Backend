@@ -40,7 +40,7 @@ first set from `POST /hosts` (default `hyperv`) and then confirmed by
 | Process    | Entry                                    | Job                                                                                                                                                                                                                 |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **API**    | `python -m app` / `uvicorn app.main:app` | serve `/api/*`; on startup, ensure every known host's RabbitMQ queues exist; publish agent requests; create `Task` rows                                                                                             |
-| **Worker** | `python -m app.worker`                   | consume every host's `response` + 5 inventory + 2 metrics queues; update Postgres and the Valkey VM-state cache; time out stale tasks; prune quick-metrics older than `OVC_METRICS_RETENTION_SECONDS` (default 1 h) |
+| **Worker** | `python -m app.worker`                   | consume every host's `response` + 5 inventory + 2 metrics queues; update Postgres and the Valkey VM-state cache; time out stale tasks; prune quick-metrics older than `OVC_METRICS_RETENTION_SECONDS` (default 1 h) and audit events older than `OVC_AUDIT_RETENTION_DAYS` (default 365, 0 = keep) |
 
 They share the `app` package (models, config, messaging, services).
 
@@ -81,6 +81,7 @@ app/
                        models.tag.TAG_COLORS (a name, never a raw colour); vm_tags
                        (vm_id, tag_id) cascades on both sides, so deleting a
                        tag/category/VM drops its assignments.
+                       AuditEvent (audit_events): append-only, no FKs - see "Audit log".
   schemas/             CamelModel response schemas (…Out) + common error envelope
   messaging/
     queues.py          QueueKind enum, queue_name(), declare_host_queues(),
@@ -111,6 +112,8 @@ app/
                        create_host / move_host (cluster<->standalone) / delete_host
                        (cascades VMs+folders), create/rename/delete folder,
                        move_vm_to_folder (reachability checks)
+    audit.py           record() / changes() / settle_task_events() / prune_events() /
+                       list_events() (keyset cursor) - see "Audit log".
     tags.py            tag catalog + set_vm_tags. Names [A-Za-z0-9_-]{1,64}, unique
                        case-insensitively (categories; tags per category; standalone
                        tags among themselves) - also DB-enforced by lower(name)
@@ -140,7 +143,8 @@ app/
     deps.py            DbSession, CurrentUser, Scope dependencies
     routes/            health, auth(/me), clusters, hosts, folders, vlans, vms
                        (+ GET /vms/{id}/thumbnail -> image/jpeg, X-Captured-At), tags
-                       (/tag-categories, /tags), tasks, images, agent_binaries
+                       (/tag-categories, /tags), tasks, images, agent_binaries,
+                       audit (GET /audit-events, admin only)
   worker/
     main.py            connect, subscribe every host's consumed queues, rescan for
                        new hosts every 15s, timeout sweeper every 30s, metrics
@@ -153,6 +157,7 @@ alembic/versions/0003_tag_color.py tags.color (existing tags -> "gray")
 alembic/versions/0004_vm_guest_os_thumbnails.py  vms.guest_os + vm_thumbnails
                                    (one JPEG per VM, FK cascade; kept off `vms`
                                    so VM queries never load the binary)
+alembic/versions/0005_audit_events.py  audit_events
 docs/agent-queue-contract.md       every request/response/payload on the agent queues
 scripts/fake_agent.py              stand-in for ovc-agent (compose profile "demo"); needs hosts created first
 scripts/release.sh                 release X.Y.Z: bump pyproject version, commit, annotated tag (README "Releasing")
@@ -195,6 +200,29 @@ ovc-frontend's `OIDC_ROLES_CLAIM`); users are upserted with **no** automatic gra
 (`ADMINISTRATOR`) gets `VisibleScope(all=True)` with no DB grant; everyone else
 is limited to their `ScopeGrant`s. RBAC is enforced in the route handlers via the
 `Scope` dependency (`VisibleScope.sees_host/…`); lists are filtered, direct reads 403.
+
+## Audit log
+
+`audit_events` answers "who deleted / moved / changed this". **Every new mutating
+route must call `services.audit.record(db, user, "<target_type>.<verb>", target, …)`**
+right after the change, on the request session - the event then commits or rolls
+back with the change. Conventions:
+
+- Record a delete *before* deleting the row (`record` reads the target's name and
+  context). For an update, build `details` with `changes(before, after)` and skip
+  `record` when it returns None (nothing changed).
+- An action that queues an agent task passes `task=` → `outcome="pending"`; the
+  worker settles it (`apply_response` on the terminal status, the timeout
+  sweeper, and `DELETE /hosts/{id}` for the host's open tasks).
+- Read-only actions (`READ_ONLY_VM_ACTIONS`, `READ_ONLY_HOST_ACTIONS`) and GETs are
+  not audited.
+- `actor=None` is a system event: `apply_vm_inventory` records
+  `vm.inventory_remove` for a VM its host stopped reporting (deleted outside OVC),
+  unless a `vm_delete` task for it is still in flight.
+- `details` keys are camelCase (they go to the wire as-is). Never put secrets in it.
+- No FKs: `target_name` is captured at event time, ids are plain UUIDs.
+
+The action catalog lives in `../ovc-frontend/docs/api-contract.md` → "Audit log".
 
 ## Gotchas
 

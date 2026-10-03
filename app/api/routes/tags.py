@@ -11,6 +11,7 @@ from ...schemas import (
     TagOut,
     TagUpdate,
 )
+from ...services.audit import changes, record
 from ...services.serializers import tag_category_out, tag_out
 from ...services.tags import (
     create_category,
@@ -23,7 +24,7 @@ from ...services.tags import (
     tag_vm_count,
     update_tag,
 )
-from ..deps import DbSession, Scope
+from ..deps import CurrentUser, DbSession, Scope
 from ..errors import forbidden, not_found
 
 router = APIRouter(tags=["tags"])
@@ -49,10 +50,12 @@ async def get_tag_categories(db: DbSession, scope: Scope) -> list[TagCategoryOut
     "/tag-categories", response_model=TagCategoryOut, status_code=status.HTTP_201_CREATED
 )
 async def add_tag_category(
-    body: TagCategoryCreate, db: DbSession, scope: Scope
+    body: TagCategoryCreate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> TagCategoryOut:
     _require_admin(scope)
-    return tag_category_out(await create_category(db, body.name))
+    category = await create_category(db, body.name)
+    await record(db, user, "tag_category.create", category)
+    return tag_category_out(category)
 
 
 async def _admin_category(db: DbSession, scope: Scope, category_id: str) -> TagCategory:
@@ -65,16 +68,23 @@ async def _admin_category(db: DbSession, scope: Scope, category_id: str) -> TagC
 
 @router.patch("/tag-categories/{category_id}", response_model=TagCategoryOut)
 async def patch_tag_category(
-    category_id: str, body: TagCategoryUpdate, db: DbSession, scope: Scope
+    category_id: str, body: TagCategoryUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> TagCategoryOut:
     category = await _admin_category(db, scope, category_id)
-    return tag_category_out(await rename_category(db, category, body.name))
+    before = category.name
+    category = await rename_category(db, category, body.name)
+    if diff := changes({"name": before}, {"name": category.name}):
+        await record(db, user, "tag_category.rename", category, details=diff)
+    return tag_category_out(category)
 
 
 @router.delete("/tag-categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_tag_category(category_id: str, db: DbSession, scope: Scope) -> Response:
+async def remove_tag_category(
+    category_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> Response:
     """Delete the category and all of its tags (they are removed from every VM)."""
     category = await _admin_category(db, scope, category_id)
+    await record(db, user, "tag_category.delete", category)
     await delete_category(db, category)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -87,12 +97,26 @@ async def get_tags(db: DbSession, scope: Scope) -> list[TagOut]:
 
 
 @router.post("/tags", response_model=TagOut, status_code=status.HTTP_201_CREATED)
-async def add_tag(body: TagCreate, db: DbSession, scope: Scope) -> TagOut:
+async def add_tag(
+    body: TagCreate, db: DbSession, scope: Scope, user: CurrentUser
+) -> TagOut:
     _require_admin(scope)
     tag = await create_tag(
         db, name=body.name, category_id=body.category_id, color=body.color
     )
+    await record(db, user, "tag.create", tag, details=await _tag_fields(db, tag))
     return tag_out(tag)
+
+
+async def _tag_fields(db: DbSession, tag: Tag) -> dict:
+    category = (
+        await db.get(TagCategory, tag.category_id) if tag.category_id is not None else None
+    )
+    return {
+        "name": tag.name,
+        "category": category.name if category is not None else None,
+        "color": tag.color,
+    }
 
 
 async def _admin_tag(db: DbSession, scope: Scope, tag_id: str) -> Tag:
@@ -104,8 +128,11 @@ async def _admin_tag(db: DbSession, scope: Scope, tag_id: str) -> Tag:
 
 
 @router.patch("/tags/{tag_id}", response_model=TagOut)
-async def patch_tag(tag_id: str, body: TagUpdate, db: DbSession, scope: Scope) -> TagOut:
+async def patch_tag(
+    tag_id: str, body: TagUpdate, db: DbSession, scope: Scope, user: CurrentUser
+) -> TagOut:
     tag = await _admin_tag(db, scope, tag_id)
+    before = await _tag_fields(db, tag)
     tag = await update_tag(
         db,
         tag,
@@ -114,12 +141,17 @@ async def patch_tag(tag_id: str, body: TagUpdate, db: DbSession, scope: Scope) -
         category_given="category_id" in body.model_fields_set,
         color=body.color,
     )
+    if diff := changes(before, await _tag_fields(db, tag)):
+        await record(db, user, "tag.update", tag, details=diff)
     return tag_out(tag, await tag_vm_count(db, scope, tag.id))
 
 
 @router.delete("/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_tag(tag_id: str, db: DbSession, scope: Scope) -> Response:
+async def remove_tag(
+    tag_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> Response:
     """Delete the tag; it is removed from every VM, the VMs stay."""
     tag = await _admin_tag(db, scope, tag_id)
+    await record(db, user, "tag.delete", tag)
     await delete_tag(db, tag)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from . import (
     agent_binaries,
+    audit,
     auth,
     clusters,
     folders,
@@ -28,5 +29,6 @@ api_router.include_router(vms.router)
 api_router.include_router(tags.router)
 api_router.include_router(tasks.router)
 api_router.include_router(images.router)
+api_router.include_router(audit.router)
 
 __all__ = ["api_router"]

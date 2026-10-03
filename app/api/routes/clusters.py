@@ -5,8 +5,9 @@ from sqlalchemy import func, select
 
 from ...models import Cluster, Host, Vm
 from ...schemas import ClusterCreate, ClusterOut, ClusterUpdate
+from ...services.audit import changes, record
 from ...services.organization import create_cluster, delete_cluster, rename_cluster
-from ..deps import DbSession, Scope
+from ..deps import CurrentUser, DbSession, Scope
 from ..errors import forbidden, not_found
 
 router = APIRouter(tags=["clusters"])
@@ -47,10 +48,15 @@ async def list_clusters(db: DbSession, scope: Scope) -> list[ClusterOut]:
 
 
 @router.post("/clusters", response_model=ClusterOut, status_code=status.HTTP_201_CREATED)
-async def add_cluster(body: ClusterCreate, db: DbSession, scope: Scope) -> ClusterOut:
+async def add_cluster(
+    body: ClusterCreate, db: DbSession, scope: Scope, user: CurrentUser
+) -> ClusterOut:
     if not scope.all:
         raise forbidden("Only an administrator can create clusters")
     cluster = await create_cluster(db, name=body.name, hypervisor=body.hypervisor)
+    await record(
+        db, user, "cluster.create", cluster, details={"hypervisor": cluster.hypervisor}
+    )
     return _cluster_out(cluster, {})
 
 
@@ -75,14 +81,20 @@ async def _admin_cluster(db: DbSession, scope: Scope, cluster_id: str) -> Cluste
 
 @router.patch("/clusters/{cluster_id}", response_model=ClusterOut)
 async def edit_cluster(
-    cluster_id: str, body: ClusterUpdate, db: DbSession, scope: Scope
+    cluster_id: str, body: ClusterUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> ClusterOut:
     cluster = await _admin_cluster(db, scope, cluster_id)
+    before = cluster.name
     cluster = await rename_cluster(db, cluster, body.name)
+    if diff := changes({"name": before}, {"name": cluster.name}):
+        await record(db, user, "cluster.rename", cluster, details=diff)
     return _cluster_out(cluster, await _counts(db))
 
 
 @router.delete("/clusters/{cluster_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_cluster(cluster_id: str, db: DbSession, scope: Scope) -> None:
+async def remove_cluster(
+    cluster_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> None:
     cluster = await _admin_cluster(db, scope, cluster_id)
+    await record(db, user, "cluster.delete", cluster)
     await delete_cluster(db, cluster)

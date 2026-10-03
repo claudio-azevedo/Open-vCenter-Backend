@@ -16,7 +16,7 @@ from ...cache import (
     release_vm_lock,
 )
 from ...config import get_settings
-from ...models import Host, Task, Vm, VmMetric, VmThumbnail
+from ...models import Folder, Host, Task, Template, Vm, VmMetric, VmThumbnail
 from ...schemas import (
     TaskEnvelope,
     VmActionRequest,
@@ -29,12 +29,14 @@ from ...schemas import (
     VmOut,
     VmTagsUpdate,
 )
+from ...services.audit import changes, record
 from ...services.organization import move_vm_to_folder
 from ...services.rbac import vm_visible
 from ...services.serializers import agent_connected, task_out, vm_metric_out, vm_out
 from ...services.tags import set_vm_tags
 from ...services.vms import (
     ACTION_MAP,
+    READ_ONLY_VM_ACTIONS,
     remove_vm_from_inventory,
     request_vm_action,
     request_vm_clone,
@@ -118,9 +120,25 @@ async def create_vm(
     if not scope.sees_host(host.id):
         raise forbidden("You cannot create a VM on this host")
     vm, task = await request_vm_create(db, host, body, requested_by=user.email)
+    await record(
+        db,
+        user,
+        "vm.create",
+        vm,
+        task=task,
+        details=body.model_dump(mode="json", by_alias=True, exclude_none=True),
+    )
     return VmCreateEnvelope(
         vm=vm_out(vm, lock=await get_vm_lock(vm.id)), task=task_out(task)
     )
+
+
+async def _folder_ref(db: DbSession, folder_id: str | None) -> dict | None:
+    """`{id, name}` of a folder for an audit diff; None = no folder."""
+    if folder_id is None:
+        return None
+    folder = await db.get(Folder, folder_id)
+    return {"id": folder_id, "name": folder.name if folder else None}
 
 
 async def _get_visible_vm(db: DbSession, scope: Scope, vm_id: str) -> Vm:
@@ -180,21 +198,33 @@ async def list_locks(db: DbSession, scope: Scope) -> list[VmLockEntry]:
 
 
 @router.delete("/vm-locks", status_code=status.HTTP_200_OK)
-async def release_locks(scope: Scope) -> dict:
+async def release_locks(db: DbSession, scope: Scope, user: CurrentUser) -> dict:
     """Force-release every VM lock. Use only when locks are known to be stale."""
     if not scope.all:
         raise forbidden("Only administrators can release VM locks")
     released = await release_all_vm_locks()
+    await record(
+        db, user, "vm.lock_release_all", target_type="vm", details={"released": released}
+    )
     return {"released": released}
 
 
 @router.delete("/vm-locks/{vm_id}", status_code=status.HTTP_200_OK)
-async def release_lock(vm_id: str, scope: Scope) -> dict:
+async def release_lock(
+    vm_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> dict:
     """Force-release one VM's lock (stale-lock recovery). Works even if the VM
     row is already gone."""
     if not scope.all:
         raise forbidden("Only administrators can release VM locks")
+    held = await get_vm_lock(vm_id)
     released = await release_vm_lock(vm_id)
+    if released:
+        vm = (
+            await db.execute(select(Vm).where(Vm.id == vm_id).options(noload("*")))
+        ).scalar_one_or_none()
+        if vm is not None:
+            await record(db, user, "vm.lock_release", vm, details={"lock": held})
     return {"released": bool(released)}
 
 
@@ -266,12 +296,16 @@ async def get_vm_thumbnail(vm_id: str, db: DbSession, scope: Scope) -> Response:
 
 @router.patch("/vms/{vm_id}", response_model=VmOut)
 async def move_vm(
-    vm_id: str, body: VmMove, db: DbSession, scope: Scope
+    vm_id: str, body: VmMove, db: DbSession, scope: Scope, user: CurrentUser
 ) -> VmOut:
     """Move the VM into a folder (folderId) or out of any folder (folderId=null).
     This is a purely logical operation - no agent request."""
     vm = await _get_visible_vm(db, scope, vm_id)
+    before = await _folder_ref(db, vm.folder_id)
     vm = await move_vm_to_folder(db, vm, body.folder_id)
+    after = await _folder_ref(db, vm.folder_id)
+    if diff := changes({"folder": before}, {"folder": after}):
+        await record(db, user, "vm.move_folder", vm, details=diff)
     return vm_out(
         vm,
         await get_vm_state(vm.id),
@@ -282,13 +316,16 @@ async def move_vm(
 
 @router.put("/vms/{vm_id}/tags", response_model=VmOut)
 async def put_vm_tags(
-    vm_id: str, body: VmTagsUpdate, db: DbSession, scope: Scope
+    vm_id: str, body: VmTagsUpdate, db: DbSession, scope: Scope, user: CurrentUser
 ) -> VmOut:
     """Replace the VM's tags (at most one per category). Any user who can see the
     VM may tag it; a DB-only change, allowed even while the VM is locked or its
     host is offline."""
     vm = await _get_visible_vm(db, scope, vm_id)
+    before = sorted(t.name for t in vm.tags)
     vm = await set_vm_tags(db, vm, body.tag_ids)
+    if diff := changes({"tags": before}, {"tags": sorted(t.name for t in vm.tags)}):
+        await record(db, user, "vm.tags", vm, details=diff)
     return vm_out(
         vm,
         await get_vm_state(vm.id),
@@ -324,6 +361,15 @@ async def vm_action(
         requested_by=user.email,
         params=body.params if body else None,
     )
+    if action not in READ_ONLY_VM_ACTIONS:
+        await record(
+            db,
+            user,
+            f"vm.{action}",
+            vm,
+            task=task,
+            details={"params": body.params} if body and body.params else None,
+        )
     return TaskEnvelope(task=task_out(task))
 
 
@@ -344,6 +390,15 @@ async def clone_vm(
     if not scope.sees_host(host.id):
         raise forbidden("You cannot create a VM on this host")
     vm, task = await request_vm_clone(db, body, host, requested_by=user.email)
+    details = body.model_dump(mode="json", by_alias=True, exclude_none=True)
+    source = (
+        await db.get(Vm, body.source_vm_id)
+        if body.source == "vm"
+        else await db.get(Template, body.template_id)
+    )
+    if source is not None:
+        details["sourceName"] = source.name
+    await record(db, user, "vm.clone", vm, task=task, details=details)
     return VmCreateEnvelope(
         vm=vm_out(vm, lock=await get_vm_lock(vm.id)), task=task_out(task)
     )
@@ -371,14 +426,20 @@ async def delete_vm(
         requested_by=user.email,
         params={"remove_files": remove_files},
     )
+    await record(
+        db, user, "vm.delete", vm, task=task, details={"removeFiles": remove_files}
+    )
     return TaskEnvelope(task=task_out(task))
 
 
 @router.delete("/vms/{vm_id}/from-inventory", status_code=status.HTTP_200_OK)
-async def forget_vm(vm_id: str, db: DbSession, scope: Scope) -> dict:
+async def forget_vm(
+    vm_id: str, db: DbSession, scope: Scope, user: CurrentUser
+) -> dict:
     """Remove the VM record from the database only - no agent request. For a VM
     left ``Unknown`` on a host that is gone for good. Refused (409 `HOST_ONLINE`)
     while the host agent is still reporting the VM."""
     vm = await _get_visible_vm(db, scope, vm_id)
+    await record(db, user, "vm.forget", vm)
     await remove_vm_from_inventory(db, vm)
     return {"removed": True}

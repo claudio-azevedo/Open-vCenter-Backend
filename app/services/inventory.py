@@ -35,6 +35,7 @@ from ..models import (
     VmSnapshot,
     VmThumbnail,
 )
+from . import audit
 
 log = logging.getLogger(__name__)
 
@@ -455,6 +456,20 @@ def _write_vm_row(
     vm.last_inventory_at = _now()
 
 
+async def _delete_in_flight(db: AsyncSession, vm_id: str) -> bool:
+    """A vm_delete task for this VM is still queued / running - its own audit
+    event covers the removal."""
+    return (
+        await db.scalar(
+            select(Task.id)
+            .where(Task.target_id == vm_id)
+            .where(Task.kind == "vm_delete")
+            .where(Task.status.in_(("queued", "running")))
+            .limit(1)
+        )
+    ) is not None
+
+
 async def apply_vm_inventory(db: AsyncSession, host_id: str, payload: dict) -> None:
     host = await db.get(Host, host_id)
     if host is None:
@@ -521,8 +536,19 @@ async def apply_vm_inventory(db: AsyncSession, host_id: str, payload: dict) -> N
 
     # drop VMs still owned by THIS host that it no longer reports. Rows now owned
     # by another cluster node (post-migration) are left for that node's inventory.
+    # A delete done through OVC drops its row in apply_response (or is still in
+    # flight), so the rest was removed outside OVC (e.g. in Hyper-V Manager) -
+    # audit it as a system event.
     for vm in existing.values():
         if vm.host_id == host_id and vm.vm_uuid not in seen:
+            if not await _delete_in_flight(db, vm.id):
+                await audit.record(
+                    db,
+                    None,
+                    "vm.inventory_remove",
+                    vm,
+                    details={"reason": "no longer reported by its host agent"},
+                )
             await clear_vm_state(vm.id)
             await db.delete(vm)
 
@@ -909,6 +935,7 @@ async def apply_response(db: AsyncSession, host_id: str, resp: AgentResponse) ->
     ):
         task.error = str(resp.result["warning"])
         log.warning("task %s succeeded with warning: %s", task.id, task.error)
+    await audit.settle_task_events(db, [task.id], task.status, task.error)
     # Persist the lifecycle change before the best-effort row refresh below, so a
     # malformed agent payload can't roll it back with the rest of the session.
     await db.flush()

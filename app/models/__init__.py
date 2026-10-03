@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .agent_binary import AgentBinary
+from .audit import AUDIT_ACTOR_TYPES, AUDIT_OUTCOMES, AuditEvent
 from .base import Base
 from .cluster import Cluster
 from .folder import Folder
@@ -23,6 +24,9 @@ from .vm import VM_STATES, Vm, VmDisk, VmNic, VmSnapshot, VmThumbnail
 
 __all__ = [
     "AgentBinary",
+    "AuditEvent",
+    "AUDIT_ACTOR_TYPES",
+    "AUDIT_OUTCOMES",
     "Base",
     "Cluster",
     "DEFAULT_HYPERVISOR",

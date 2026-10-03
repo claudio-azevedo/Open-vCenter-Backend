@@ -131,12 +131,14 @@ async def rename_folder(db: AsyncSession, folder: Folder, name: str) -> Folder:
     return folder
 
 
-async def delete_folder(db: AsyncSession, folder: Folder) -> None:
-    await db.execute(
+async def delete_folder(db: AsyncSession, folder: Folder) -> int:
+    """Delete the folder; its VMs stay, detached. Returns how many were detached."""
+    detached = await db.execute(
         update(Vm).where(Vm.folder_id == folder.id).values(folder_id=None)
     )
     await db.delete(folder)
     await db.flush()
+    return detached.rowcount or 0
 
 
 # ---- move a VM into / out of a folder ----------------------------------

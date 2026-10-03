@@ -8,6 +8,18 @@ All notable changes to ovc-backend. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Audit log: every change made through the API (VM create / clone / delete /
+  power and management actions / folder move / tags, folders, clusters, host
+  membership and actions, VLANs, tags, agent binaries, forced lock releases) is
+  recorded with who, when, the target's name and a before/after diff.
+  Agent-task events start `pending` and the worker settles them to the task's
+  outcome. VMs that vanish from a host's inventory (deleted outside OVC) are
+  recorded as system events. `GET /audit-events` (admin only, filters, cursor
+  pagination). Kept `OVC_AUDIT_RETENTION_DAYS` (default 365, `0` = forever).
+  Migration 0005.
+
 ## [0.1.1] - 2026-10-03
 
 ### Added
