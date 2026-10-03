@@ -196,6 +196,9 @@ class VmOut(CamelModel):
     # until the first report. Goes Unknown-stale once the host drops offline.
     last_seen: datetime | None = None
     firmware: str = "UEFI"
+    # guest OS name from the hypervisor's guest integration; the last known value
+    # is kept while the VM is off. Null until first reported.
+    guest_os: str | None = None
     uptime_sec: int | None = None
     vcpu: int
     # simple hypervisor CPU-usage average (percent), refreshed each inventory

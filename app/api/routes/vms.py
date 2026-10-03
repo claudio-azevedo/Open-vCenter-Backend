@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import noload, selectinload
 
 from ...cache import (
     get_vm_lock,
@@ -16,7 +16,7 @@ from ...cache import (
     release_vm_lock,
 )
 from ...config import get_settings
-from ...models import Host, Task, Vm, VmMetric
+from ...models import Host, Task, Vm, VmMetric, VmThumbnail
 from ...schemas import (
     TaskEnvelope,
     VmActionRequest,
@@ -228,6 +228,40 @@ async def list_vm_metrics(
         )
     ).scalars().all()
     return [vm_metric_out(r) for r in rows]
+
+
+@router.get(
+    "/vms/{vm_id}/thumbnail",
+    response_class=Response,
+    responses={
+        200: {"content": {"image/jpeg": {}}},
+        404: {"description": "VM not found, or no thumbnail captured yet"},
+    },
+)
+async def get_vm_thumbnail(vm_id: str, db: DbSession, scope: Scope) -> Response:
+    """Last console thumbnail (320x240 JPEG) captured by the agent's vm_inventory.
+
+    Only Running VMs are captured, so for a VM that is off this is the last image
+    taken while it ran. ``X-Captured-At`` carries the capture time (ISO 8601)."""
+    vm = (
+        await db.execute(select(Vm).where(Vm.id == vm_id).options(noload("*")))
+    ).scalar_one_or_none()
+    if vm is None:
+        raise not_found("VM")
+    if not vm_visible(scope, vm):
+        raise forbidden()
+
+    thumb = await db.get(VmThumbnail, vm_id)
+    if thumb is None:
+        raise not_found("Thumbnail")
+    return Response(
+        content=thumb.image,
+        media_type=thumb.content_type,
+        headers={
+            "Cache-Control": "private, max-age=60",
+            "X-Captured-At": thumb.captured_at.astimezone(UTC).isoformat(),
+        },
+    )
 
 
 @router.patch("/vms/{vm_id}", response_model=VmOut)

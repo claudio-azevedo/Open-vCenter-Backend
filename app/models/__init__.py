@@ -19,7 +19,7 @@ from .tag import (
 )
 from .task import TERMINAL_TASK_STATUSES, Task
 from .vlan import Vlan
-from .vm import VM_STATES, Vm, VmDisk, VmNic, VmSnapshot
+from .vm import VM_STATES, Vm, VmDisk, VmNic, VmSnapshot, VmThumbnail
 
 __all__ = [
     "AgentBinary",
@@ -49,5 +49,6 @@ __all__ = [
     "VmDisk",
     "VmNic",
     "VmSnapshot",
+    "VmThumbnail",
     "VM_STATES",
 ]

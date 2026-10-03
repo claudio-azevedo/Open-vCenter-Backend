@@ -187,6 +187,7 @@ def vm_out(
         state=state,
         last_seen=vm.last_inventory_at,
         firmware=vm.firmware or "UEFI",
+        guest_os=vm.guest_os,
         uptime_sec=vm.uptime_sec,
         vcpu=vm.vcpu,
         cpu_usage_percent=vm.cpu_usage_percent,

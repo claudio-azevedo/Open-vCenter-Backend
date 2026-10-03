@@ -467,6 +467,8 @@ already in canonical form passes through.
       "name": "web-01",
       "state": "Running",
       "firmware": "UEFI",
+      "guestOs": "Windows Server 2022 Datacenter",
+      "thumbnail": "/9j/4AAQSkZJRgABAQ…",
       "uptimeSec": 512340,
       "vcpu": 4,
       "cpuUsagePercent": 5,
@@ -529,6 +531,8 @@ already in canonical form passes through.
 | `name`                                              | `Vm.name`                                                                                                                                                                            | keeps existing / falls back to `id` |
 | `state`                                             | `Vm.state` + fast cache                                                                                                                                                              | `"Unknown"`                         |
 | `firmware`                                          | `Vm.firmware` - `"BIOS"` \| `"UEFI"` (legacy `generation` int: 1→BIOS else UEFI)                                                                                                     | `"UEFI"`                            |
+| `guestOs`                                           | `Vm.guest_os` - guest OS name from the guest integration (Hyper-V KVP); only known while the VM runs, blank = missing                                                                | keeps existing (omit → unchanged)   |
+| `thumbnail`                                         | console JPEG, base64 (≤ 256 KiB, JPEG magic) → `vm_thumbnails` upsert, stripped from the item; `GET /api/vms/:id/thumbnail`                                                          | keeps the last stored image         |
 | `uptimeSec`                                         | `Vm.uptime_sec`                                                                                                                                                                      | `null`                              |
 | `vcpu`                                              | `Vm.vcpu`                                                                                                                                                                            | `1`                                 |
 | `cpuUsagePercent` (agent `cpuUsagePct`)             | `Vm.cpu_usage_percent` - a simple hypervisor average, **not** a time-series                                                                                                          | `null`                              |

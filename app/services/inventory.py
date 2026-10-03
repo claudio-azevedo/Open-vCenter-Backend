@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,6 +33,7 @@ from ..models import (
     VmMetric,
     VmNic,
     VmSnapshot,
+    VmThumbnail,
 )
 
 log = logging.getLogger(__name__)
@@ -121,6 +125,61 @@ def _first(item: dict, *keys):
     return None
 
 
+# Console thumbnails sent by the agent (320x240 JPEG, usually 5-20 KB).
+MAX_THUMBNAIL_BYTES = 256 * 1024
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def _pop_thumbnail(raw: dict) -> bytes | None:
+    """Remove the agent's base64 ``thumbnail`` from a VM item and return the
+    decoded JPEG, or None if absent / invalid (bad base64, not a JPEG, oversized).
+    Popped in place so the image never ends up in a task payload or a log."""
+    value = raw.pop("thumbnail", None)
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        image = base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        log.warning("vm thumbnail for %s: invalid base64 - dropped", raw.get("id"))
+        return None
+    if len(image) > MAX_THUMBNAIL_BYTES or not image.startswith(_JPEG_MAGIC):
+        log.warning(
+            "vm thumbnail for %s: rejected (%d bytes, not a JPEG or too big)",
+            raw.get("id"),
+            len(image),
+        )
+        return None
+    return image
+
+
+async def _upsert_thumbnails(
+    db: AsyncSession, thumbnails: dict[str, bytes], captured_at: datetime
+) -> None:
+    """Insert or replace the console thumbnail of each given VM (keyed by Vm.id)."""
+    if not thumbnails:
+        return
+    stmt = pg_insert(VmThumbnail).values(
+        [
+            {
+                "vm_id": vm_id,
+                "image": image,
+                "content_type": "image/jpeg",
+                "captured_at": captured_at,
+            }
+            for vm_id, image in thumbnails.items()
+        ]
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[VmThumbnail.vm_id],
+        set_={
+            "image": stmt.excluded.image,
+            "content_type": stmt.excluded.content_type,
+            "captured_at": stmt.excluded.captured_at,
+        },
+    )
+    await db.execute(stmt)
+
+
 def normalize_vm(item: dict) -> dict:
     """Map the agent's `VMInfo` onto the backend `Vm` shape (schemas/vm.py).
     Idempotent - fields already in canonical form pass through."""
@@ -206,6 +265,7 @@ def normalize_vm(item: dict) -> dict:
         "state": item.get("state", "Unknown"),
         "metricsEnabled": item.get("metricsEnabled"),
         "firmware": _firmware_of(item),
+        "guestOs": item.get("guestOs"),
         "uptimeSec": item.get("uptimeSec"),
         "vcpu": vcpu,
         "memoryBytes": _as_int(memory_bytes) or 0,
@@ -357,6 +417,12 @@ def _write_vm_row(
     if raw.get("metricsEnabled") is not None:
         vm.metrics_enabled = bool(item.get("metricsEnabled"))
 
+    # Only reported while the VM runs (guest integration) - an absent/blank value
+    # means "unknown now", so an Off VM keeps the last known OS.
+    guest_os = item.get("guestOs")
+    if isinstance(guest_os, str) and guest_os.strip():
+        vm.guest_os = guest_os.strip()[:255]
+
     if has("firmware", "generation") and item.get("firmware"):
         vm.firmware = item["firmware"]
     elif not partial:
@@ -414,8 +480,10 @@ async def apply_vm_inventory(db: AsyncSession, host_id: str, payload: dict) -> N
     }
     seen: set[str] = set()
     tombstoned = await list_deleted_vm_uuids(host_id)
+    thumbnails: dict[str, bytes] = {}
 
     for raw in items:
+        thumbnail = _pop_thumbnail(raw)
         item = normalize_vm(raw)
         vm_uuid = item["vmUuid"]
         if not vm_uuid:
@@ -448,6 +516,8 @@ async def apply_vm_inventory(db: AsyncSession, host_id: str, payload: dict) -> N
             vm, raw, item, host_id=host_id, cluster_id=host.cluster_id, partial=False
         )
         await set_vm_state(vm.id, vm.state)
+        if thumbnail is not None:
+            thumbnails[vm.id] = thumbnail
 
     # drop VMs still owned by THIS host that it no longer reports. Rows now owned
     # by another cluster node (post-migration) are left for that node's inventory.
@@ -461,8 +531,20 @@ async def apply_vm_inventory(db: AsyncSession, host_id: str, payload: dict) -> N
     for vm_uuid in tombstoned - seen:
         await clear_vm_deleted(host_id, vm_uuid)
 
+    # After the flush so new VM rows exist for the FK. VMs without a fresh image
+    # (not running, capture failed) keep the stored one.
+    if thumbnails:
+        await db.flush()
+        await _upsert_thumbnails(
+            db, thumbnails, _parse_dt(payload.get("reported_at")) or _now()
+        )
+
     log.info(
-        "vm_inventory host=%s id=%s vms=%d", host.name, host.short_id, len(items)
+        "vm_inventory host=%s id=%s vms=%d thumbnails=%d",
+        host.name,
+        host.short_id,
+        len(items),
+        len(thumbnails),
     )
 
 
@@ -792,6 +874,11 @@ async def apply_response(db: AsyncSession, host_id: str, resp: AgentResponse) ->
             log.warning("response for unknown task id=%s host=%s", resp.id, host_id)
         return
 
+    # A full-inventory result (refresh_inventory, unfiltered vm_status) carries
+    # console thumbnails; the same snapshot reaches the vm_inventory queue, which
+    # stores them. Drop them here so they never bloat the task record.
+    _strip_response_thumbnails(resp)
+
     # Keep the raw envelope for the task "Details" view - the latest one wins, so
     # a finished task ends up with its terminal response.
     task.response_payload = resp.model_dump(mode="json")
@@ -957,6 +1044,17 @@ def _response_vm_items(resp: AgentResponse) -> list[dict]:
         if src.get("id") or src.get("vmId"):
             return [src]
     return []
+
+
+def _strip_response_thumbnails(resp: AgentResponse) -> None:
+    """Drop console thumbnails from every VM object in a response, in place."""
+    for src in (resp.vm_status, resp.result):
+        if not isinstance(src, dict):
+            continue
+        src.pop("thumbnail", None)
+        for v in src.get("vms") or []:
+            if isinstance(v, dict):
+                v.pop("thumbnail", None)
 
 
 async def _apply_response_vm_status(

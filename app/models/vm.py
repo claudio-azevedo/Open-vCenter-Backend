@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     text,
@@ -80,6 +81,9 @@ class Vm(Base, TimestampMixin):
     firmware: Mapped[str] = mapped_column(
         String(8), nullable=False, server_default="UEFI"
     )
+    # guest OS name reported by the hypervisor's guest integration (Hyper-V KVP).
+    # Only known while the VM runs, so inventory keeps the last value when absent.
+    guest_os: Mapped[str | None] = mapped_column(String(255), nullable=True)
     uptime_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vcpu: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
@@ -283,3 +287,26 @@ class VmNic(Base):
     )
 
     vm: Mapped[Vm] = relationship("Vm", back_populates="nics")
+
+
+class VmThumbnail(Base):
+    """Last console thumbnail the agent captured for a VM (one row per VM).
+
+    Kept out of ``vms`` on purpose: VM queries load the full row (lists, tree,
+    inventory sync), so a binary column there would be carried everywhere. The
+    agent only captures Running VMs, so the row keeps the last image while the
+    VM is off. No ORM relationship - the FK cascade drops it with the VM.
+    """
+
+    __tablename__ = "vm_thumbnails"
+
+    vm_id: Mapped[str] = mapped_column(
+        UUID_STR, ForeignKey("vms.id", ondelete="CASCADE"), primary_key=True
+    )
+    image: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="image/jpeg"
+    )
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
