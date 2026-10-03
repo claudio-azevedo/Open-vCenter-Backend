@@ -8,6 +8,8 @@ All notable changes to ovc-backend. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-03
+
 ### Added
 
 - Audit log: every change made through the API (VM create / clone / delete /
@@ -18,7 +20,8 @@ All notable changes to ovc-backend. The format follows
   outcome. VMs that vanish from a host's inventory (deleted outside OVC) are
   recorded as system events. `GET /audit-events` (admin only, filters, cursor
   pagination). Kept `OVC_AUDIT_RETENTION_DAYS` (default 365, `0` = forever).
-  Migration 0005.
+  Migration 0005. Run the API and the worker from the same release - the
+  worker is what settles event outcomes.
 
 ## [0.1.1] - 2026-10-03
 
@@ -54,6 +57,7 @@ All notable changes to ovc-backend. The format follows
 
 First public release.
 
-[Unreleased]: https://github.com/claudio-azevedo/Open-vCenter-Backend/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/claudio-azevedo/Open-vCenter-Backend/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/claudio-azevedo/Open-vCenter-Backend/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/claudio-azevedo/Open-vCenter-Backend/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/claudio-azevedo/Open-vCenter-Backend/releases/tag/0.1.0
