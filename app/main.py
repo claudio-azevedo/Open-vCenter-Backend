@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 
+from . import __version__
 from .api.errors import install_error_handlers
 from .api.routes import api_router
 from .config import get_settings
@@ -40,7 +41,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title="Open vCenter API",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",

@@ -188,6 +188,35 @@ alembic revision --autogenerate -m "describe change"
 
 `alembic/env.py` takes the DSN from `app.config`, so `OVC_DATABASE_URL` must be set.
 
+## Releasing
+
+Versions follow [Semantic Versioning](https://semver.org/): **patch** (`0.1.1`
+→ `0.1.2`) for fixes and small changes, **minor** (`0.1.x` → `0.2.0`) for new
+features, migrations or contract changes, **major** once the API is stable
+(`1.0.0`). A release is three things that always carry the same number: the
+`version` in `pyproject.toml` (the only place it's written - the app reads it
+back from the installed package for OpenAPI's `info.version`), a git tag
+(`0.1.2`, no `v` prefix), and a GitHub Release. Pushing the tag makes CI
+publish the image `ghcr.io/claudio-azevedo/ovc-backend:<version>` (every push
+to `main` still publishes `:latest`).
+
+1. Start from an up-to-date, clean `main` where `ruff check app` and
+   `python -m pytest` pass.
+2. **Changelog**: in [`CHANGELOG.md`](CHANGELOG.md), write the release's notes
+   under a new `## [0.1.2] - YYYY-MM-DD` heading (Added / Changed / Fixed),
+   from `git log --oneline <previous-tag>..main`. Leave `## [Unreleased]` empty
+   above it and update the compare links at the bottom. Commit it:
+   `git commit -am "Changelog for 0.1.2"`.
+3. **Bump and tag**: `scripts/release.sh 0.1.2`. It checks the tree is clean
+   and the changelog has the section, sets `pyproject.toml`'s version, commits
+   it as `Release 0.1.2` and creates the annotated tag `0.1.2`.
+4. **Push**: `git push origin main --follow-tags`. CI builds and publishes the
+   `:0.1.2` image from the tag.
+5. **GitHub Release**: create it from the tag, titled with the version and the
+   changelog section as the notes - on GitHub (Releases ▸ Draft a new release ▸
+   choose the tag) or with
+   `gh release create 0.1.2 --title 0.1.2 --notes "<changelog section>"`.
+
 ## Project layout
 
 See [`LLM.md`](LLM.md) for an annotated map of `app/` and the async task lifecycle.

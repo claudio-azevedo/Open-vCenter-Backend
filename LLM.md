@@ -18,6 +18,12 @@ REST API + RabbitMQ worker for **Open vCenter**. Part of a three-service suite:
 All code, comments, identifiers, commit messages, docs and log strings are in
 **English**, regardless of the language a contributor chats in.
 
+Releases: SemVer, tags without `v` (`0.1.1`), the version written only in
+`pyproject.toml` (`app.__version__` reads it from package metadata). Follow
+README "Releasing": `CHANGELOG.md` section, `scripts/release.sh X.Y.Z`
+(bumps, commits, tags), `git push origin main --follow-tags`, then a GitHub
+Release from the tag.
+
 ## Hypervisors
 
 Every `Host` and `Cluster` carries a `hypervisor` discriminator (`app/models/host.py`
@@ -149,6 +155,7 @@ alembic/versions/0004_vm_guest_os_thumbnails.py  vms.guest_os + vm_thumbnails
                                    so VM queries never load the binary)
 docs/agent-queue-contract.md       every request/response/payload on the agent queues
 scripts/fake_agent.py              stand-in for ovc-agent (compose profile "demo"); needs hosts created first
+scripts/release.sh                 release X.Y.Z: bump pyproject version, commit, annotated tag (README "Releasing")
 docker-compose.yml                 api + worker (+ fake-agent) only - infra is ../infra-containers.
                                    DB starts EMPTY - no seed; register hosts via POST /api/hosts
 ```
